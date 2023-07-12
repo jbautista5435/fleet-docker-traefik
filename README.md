@@ -35,7 +35,7 @@ Please make sure to edit `fleet/default.env` and `mysql/default.env` and replace
 This repository includes two basic examples of how to enable TLS based on `traefik`.
 
 To be able to expose the installation, please make sure that:
-- The ports `80` and `443` are open / reachable
+- Ports `80` and `443` are open/reachable
 - A `DNS` entry exists that points to your host (A-record pointing to `fleet.example.com`)
 
 ### Standalone setup
