@@ -1,43 +1,103 @@
----
-version: '3.7'
+version: '3.8'
 
-services: 
-
-  mysql: 
-    image: mysql
+services:
+  mysql-primary:
+    image: mysql:8
+    container_name: mysql-primary
+    restart: always
     volumes:
-      - ./mysql/data:/var/lib/mysql
+      - ./mysql/primary/data:/var/lib/mysql
     env_file: mysql/default.env
-    cap_add:
-      - SYS_NICE
+    environment:
+      MYSQL_REPLICATION_MODE: primary
+      MYSQL_REPLICATION_USER: repl_user
+      MYSQL_REPLICATION_PASSWORD: repl_password
+    networks:
+      - fleet_network
+
+  mysql-secondary:
+    image: mysql:8
+    container_name: mysql-secondary
+    restart: always
+    volumes:
+      - ./mysql/secondary/data:/var/lib/mysql
+    env_file: mysql/default.env
+    environment:
+      MYSQL_REPLICATION_MODE: secondary
+      MYSQL_PRIMARY_HOST: mysql-primary
+      MYSQL_REPLICATION_USER: repl_user
+      MYSQL_REPLICATION_PASSWORD: repl_password
+    networks:
+      - fleet_network
 
   redis:
-    image: redis
-
-  fleet: 
-    image: fleetdm/fleet
-    depends_on:
-      - mysql
-      - redis
-    command: sh -c "/usr/bin/fleet prepare db --no-prompt && /usr/bin/fleet serve"
-    env_file: fleet/default.env
+    image: redis:7
+    container_name: redis
+    restart: always
+    command: redis-server --appendonly yes
     volumes:
-      - ./fleet:/fleet/
-      - ./fleet/logs:/logs
-      - ./fleet/vulndb:/vulndb
-    labels:
-      traefik.enable: true
-      traefik.http.routers.fleet.entrypoints: "websecure"
-      traefik.http.routers.fleet.rule: "Host(`fleet.apedv.com`)"
-      traefik.http.services.fleet.loadbalancer.server.port: "8412"
-      traefik.http.routers.fleet.tls: true
-      traefik.http.routers.fleet.tls.certresolver: "default"
+      - ./redis:/data
     networks:
-      - traefik_proxy
-      - default
+      - fleet_network
+
+  redis-sentinel:
+    image: redis:7
+    container_name: redis-sentinel
+    restart: always
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf
+    networks:
+      - fleet_network
+
+  fleet:
+    image: fleetdm/fleet:latest
+    container_name: fleet
+    restart: always
+    deploy:
+      replicas: 3
+    depends_on:
+      - mysql-primary
+      - redis
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.fleet.rule: "Host(`fleet.example.com`)"
+      traefik.http.services.fleet.loadbalancer.server.port: "8412"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8412/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - fleet_network
+
+  traefik:
+    image: traefik:v2.5
+    container_name: traefik
+    restart: always
+    command:
+      - "--providers.docker"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - fleet_network
+
+  mysql-backup:
+    image: mysql:8
+    container_name: mysql-backup
+    restart: always
+    command: >
+      sh -c 'mysqldump -h mysql-primary -u root --password=root_password fleet > /backup/fleet.sql'
+    volumes:
+      - ./backup:/backup
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+    networks:
+      - fleet_network
 
 networks:
-  traefik_proxy:
-    external: true
-  default:
+  fleet_network:
     driver: bridge
