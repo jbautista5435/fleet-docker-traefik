@@ -1,24 +1,46 @@
----
-version: '3.7'
 
-services: 
 
-  mysql: 
+services:
+  caweb:
+    image: nginx:alpine
+    volumes:
+      - ./traefik/ca:/usr/share/nginx/html:ro
+    labels:
+      traefik.enable: "true"
+      # HTTP (for initial CA bootstrap)
+      traefik.http.routers.caweb-http.entrypoints: "web"
+      traefik.http.routers.caweb-http.rule: "Host(`fleet.mynetworksettings.com`) && (Path(`/ca.crt`) || PathPrefix(`/ca/`))"
+      traefik.http.services.caweb.loadbalancer.server.port: "80"
+
+      # HTTPS (so https://.../ca.crt also works)
+      traefik.http.routers.caweb-https.entrypoints: "websecure"
+      traefik.http.routers.caweb-https.rule: "Host(`fleet.mynetworksettings.com`) && (Path(`/ca.crt`) || PathPrefix(`/ca/`))"
+      traefik.http.routers.caweb-https.tls: "true"
+      traefik.http.routers.caweb-https.service: "caweb"
+    networks:
+      - traefik_proxy
+      - default
+  mysql:
     image: mysql
+    platform: linux/x86_64
     volumes:
       - ./mysql/data:/var/lib/mysql
     env_file: mysql/default.env
     cap_add:
       - SYS_NICE
+    expose:
+      - 3306
 
   redis:
     image: redis
 
-  fleet: 
+  fleet:
     image: fleetdm/fleet
     depends_on:
       - mysql
       - redis
+    platform: linux/x86_64
+    # Prepare DB, then serve on the port in FLEET_SERVER_ADDRESS (8412)
     command: sh -c "/usr/bin/fleet prepare db --no-prompt && /usr/bin/fleet serve"
     env_file: fleet/default.env
     volumes:
@@ -26,12 +48,11 @@ services:
       - ./fleet/logs:/logs
       - ./fleet/vulndb:/vulndb
     labels:
-      traefik.enable: true
+      traefik.enable: "true"
       traefik.http.routers.fleet.entrypoints: "websecure"
-      traefik.http.routers.fleet.rule: "Host(`fleet.example.com`)"
+      traefik.http.routers.fleet.rule: "Host(`fleet.mynetworksettings.com`)"  # <— CHANGED
+      traefik.http.routers.fleet.tls: "true"
       traefik.http.services.fleet.loadbalancer.server.port: "8412"
-      traefik.http.routers.fleet.tls: true
-      traefik.http.routers.fleet.tls.certresolver: "default"
     networks:
       - traefik_proxy
       - default
@@ -39,25 +60,20 @@ services:
   traefik:
     image: traefik:v2.7
     container_name: traefik
+    ports:
+      - "80:80"      # optional (can auto-redirect or stay unused)
+      - "443:443"    # HTTPS entrypoint
+      - "8080:8080"  # Traefik dashboard
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/etc/traefik
-    # labels:
-    #  - "traefik.enable=true"
-    #  - "traefik.http.routers.traefik.rule=Host(`traefik.example.com`)"
-    #  - "traefik.http.routers.traefik.entrypoints=websecure"
-    #  - "traefik.http.routers.traefik.tls.certresolver=default"
-    #  - "traefik.http.routers.traefik.service=api@internal"
-    #  - "traefik.http.routers.traefik.middlewares=auth@docker"
-    #  - "traefik.http.middlewares.auth.basicauth.users=user:pass"
+      - ./traefik/certs:/certs
+    # IMPORTANT: no labels here — routes come from labels on "fleet"
     networks:
       - traefik_proxy
       - default
-    ports:
-      - "80:80"
-      - "443:443"
     restart: unless-stopped
 
 networks:
@@ -65,3 +81,4 @@ networks:
     external: true
   default:
     driver: bridge
+
